@@ -31,7 +31,7 @@ def listen():
 # -------------------------
 # Talk to Ollama
 # -------------------------
-def ask_ollama(prompt, model="llama3.2:latest"):
+def ask_ollama(prompt, model="gpt-oss:20b"):
     response = ollama.chat(
         model=model,
         messages=[
@@ -54,15 +54,24 @@ def main():
     speak("Got it. Let me write that down.")
 
     today = datetime.date.today().strftime("%Y-%m-%d")
-    ai_prompt = f"Turn this into a neat journal entry for {today}: {response}"
+    ai_prompt = f"""
+    You are my personal assistant. 
+    Write a short journal entry for {today} that:
+    - Starts by reminding me of the task in a casual, direct way. (e.g., "Hey, you have math homework at 10.")
+    - Suggests a very short, simple plan to make it easier to get started or stay focused.
+    - Keep it friendly, not too long.
+    - Only output the journal entry text, nothing else.
+
+    Task: {response}
+    """
     journal_entry = ask_ollama(ai_prompt)
 
     # Save entry
     with open("journal.txt", "a", encoding="utf-8") as f:
-        f.write("\n" + journal_entry + "\n")
+        f.write("\n" + journal_entry.strip() + "\n")
 
-    print("\n✅ Journal Entry:\n", journal_entry)
-    speak("Your journal entry has been saved.")
+    print("\n✅ Journal Entry:\n", journal_entry.strip())
+    speak("Your journal entry h.ps1as been saved.")
 
 if __name__ == "__main__":
     main()
