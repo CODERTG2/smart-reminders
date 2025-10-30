@@ -2,9 +2,11 @@ import datetime
 import json
 import threading
 import time
-from DeepseekClient import DeepseekClient
+from deepseek_client import DeepseekClient
 import speech_recognition as sr
 import pyttsx3
+import sys
+sys.stdout.reconfigure(encoding="utf-8")
 
 # -------------------------
 # Text-to-Speech setup
@@ -21,14 +23,14 @@ def speak(text):
 def listen():
     r = sr.Recognizer()
     with sr.Microphone() as source:
-        print("🎤 Listening...")
+        print(" Listening...")
         audio = r.listen(source)
     try:
         text = r.recognize_google(audio)
-        print(f"🗣️ You said: {text}")
+        print(f" You said: {text}")
         return text
     except Exception as e:
-        print("❌ Error:", e)
+        print(" Error:", e)
         return "Sorry, I didn’t catch that."
 
 # -------------------------
@@ -60,30 +62,46 @@ def get_motivational_message(task, reminder_type):
     """
     return ask_deepseek(prompt)
 
+from plyer import notification
+
 def reminder_notification(task, reminder_type):
-    """Play the reminder notification with motivational message."""
+    """Show popup and speak motivational reminder."""
     try:
         # Generate motivational message
         motivation = get_motivational_message(task, reminder_type)
-        
-        # Create the full reminder message
+
+        # Create message based on type
         if reminder_type == "halfway":
             time_msg = "You're halfway to your task time!"
         elif reminder_type == "three_quarter":
-            time_msg = "Almost time - 75% there!"
-        else:  # final
-            time_msg = "Final reminder - it's almost time!"
-        
+            time_msg = "Almost time — 75% there!"
+        else:
+            time_msg = "Final reminder — it’s almost time!"
+
         full_message = f"{time_msg} {motivation}"
-        
+
+        # 🗣 Speak message
         print(f"\n🔔 REMINDER: {full_message}")
         speak(full_message)
-        
+
+        # 💬 Popup notification
+        notification.notify(
+            title=f"Reminder: {task}",
+            message=full_message,
+            timeout=10  # seconds
+        )
+
     except Exception as e:
         print(f"❌ Error in reminder: {e}")
         fallback_msg = f"Reminder: Time to work on {task}!"
         print(f"\n🔔 REMINDER: {fallback_msg}")
         speak(fallback_msg)
+        notification.notify(
+            title=f"Reminder: {task}",
+            message=fallback_msg,
+            timeout=10
+        )
+
 
 def schedule_reminder(reminder_time, task, reminder_type):
     """Schedule a reminder to trigger at the specified time."""
@@ -93,11 +111,11 @@ def schedule_reminder(reminder_time, task, reminder_type):
         wait_seconds = (reminder_time - current_time).total_seconds()
         
         if wait_seconds > 0:
-            print(f"⏱️ {reminder_type.replace('_', ' ').title()} reminder scheduled for {reminder_time.strftime('%H:%M')}")
+            print(f"⏱ {reminder_type.replace('_', ' ').title()} reminder scheduled for {reminder_time.strftime('%H:%M')}")
             time.sleep(wait_seconds)
             reminder_notification(task, reminder_type)
         else:
-            print(f"⚠️ Reminder time for {reminder_type} has already passed")
+            print(f" Reminder time for {reminder_type} has already passed")
     
     # Start the reminder in a separate thread
     reminder_thread = threading.Thread(target=wait_and_remind, daemon=True)
@@ -133,7 +151,7 @@ def main():
     with open("journal.txt", "a", encoding="utf-8") as f:
         f.write("\n" + journal_entry.strip() + "\n")
 
-    print("\n✅ Journal Entry:\n", journal_entry.strip())
+    print("\n Journal Entry:\n", journal_entry.strip())
     speak("Your journal entry has been saved.")
 
     prompt = f"""
@@ -147,81 +165,85 @@ Example output:
 
 Journal Entry: {journal_entry.strip()}
 """
-
+    # Ask DeepSeek to extract structured info
     json_response_text = ask_deepseek(prompt)
+
     print("\n🔍 Extracted Info:")
     print(json_response_text)
-    
+
     try:
-        # Extract JSON from markdown code block if present
+        # Clean up Markdown code block formatting
         clean_json = json_response_text.strip()
         if clean_json.startswith("```json"):
-            # Remove markdown code fences
             clean_json = clean_json.replace("```json", "").replace("```", "").strip()
         elif clean_json.startswith("```"):
-            # Remove generic code fences
             clean_json = clean_json.replace("```", "").strip()
-        
-        # Parse the JSON response
+
+        # Parse JSON
         parsed_data = json.loads(clean_json)
-        task_time = parsed_data.get("time", "Unknown")
-        task_description = parsed_data.get("task", "Unknown")
-        
+
+        # Handle list or dict format
+        if isinstance(parsed_data, list):
+            first_task = parsed_data[0]
+        else:
+            first_task = parsed_data
+
+        task_time = first_task.get("time", "Unknown")
+        task_description = first_task.get("task", "Unknown")
+
         print(f"⏰ Time: {task_time}")
         print(f"📝 Task: {task_description}")
-    except json.JSONDecodeError as e:
+
+    except Exception as e:
         print(f"❌ Could not parse JSON response: {e}")
         print(f"Raw response: {repr(json_response_text)}")
-    
-    # Convert task_time to datetime object
+        task_time = "Unknown"
+        task_description = "Unknown"
+
+    # --- Schedule Reminders ---
     if task_time != "Unknown":
         try:
-            # Parse the time and create a datetime for today
             time_parts = task_time.split(":")
             task_hour = int(time_parts[0])
             task_minute = int(time_parts[1])
-            
+
             today = datetime.date.today()
             task_datetime = datetime.datetime.combine(today, datetime.time(task_hour, task_minute))
-            
-            # If the task time is in the past, assume it's for tomorrow
             current_time = datetime.datetime.now()
+
+            # If time is past, set for tomorrow
             if task_datetime <= current_time:
                 task_datetime += datetime.timedelta(days=1)
-            
-            print(f"🕒 Task scheduled for: {task_datetime.strftime('%Y-%m-%d %H:%M')}")
-            
+
+            print(f" Task scheduled for: {task_datetime.strftime('%Y-%m-%d %H:%M')}")
+
             # Calculate reminder times
             time_diff = task_datetime - current_time
-            if time_diff.total_seconds() > 0:
-                # Calculate reminder times (halfway, 3/4, 9/10)
-                halfway_time = current_time + (time_diff * 0.5)
-                three_quarter_time = current_time + (time_diff * 0.75)
-                nine_tenth_time = current_time + (time_diff * 0.9)
-                
-                # Schedule reminders
-                schedule_reminder(halfway_time, task_description, "halfway")
-                schedule_reminder(three_quarter_time, task_description, "three_quarter")
-                schedule_reminder(nine_tenth_time, task_description, "final")
-                
-                speak("Your reminders have been scheduled!")
-                
-                # Keep the program running to allow reminders to fire
-                print("\n💤 Program will keep running to deliver reminders...")
-                print("Press Ctrl+C to exit")
-                try:
-                    while True:
-                        time.sleep(60)  # Check every minute
-                except KeyboardInterrupt:
-                    print("\n👋 Goodbye! Reminders cancelled.")
-            else:
-                speak("The task time appears to be in the past.")
-                
-        except (ValueError, IndexError) as e:
-            print(f"❌ Error parsing task time: {e}")
+            halfway_time = current_time + (time_diff * 0.5)
+            three_quarter_time = current_time + (time_diff * 0.75)
+            nine_tenth_time = current_time + (time_diff * 0.9)
+
+            # Schedule reminders
+            schedule_reminder(halfway_time, task_description, "halfway")
+            schedule_reminder(three_quarter_time, task_description, "three_quarter")
+            schedule_reminder(nine_tenth_time, task_description, "final")
+
+            speak("Your reminders have been scheduled!")
+
+            print("\n Program will keep running to deliver reminders...")
+            print("Press Ctrl+C to exit")
+            try:
+                while True:
+                    time.sleep(60)
+            except KeyboardInterrupt:
+                print("\n Goodbye! Reminders cancelled.")
+
+        except Exception as e:
+            print(f" Error parsing task time: {e}")
             speak("I couldn't understand the task time.")
     else:
         speak("No valid task time was found.")
+
 
 if __name__ == "__main__":
     main()

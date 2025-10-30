@@ -6,7 +6,8 @@ import os
 import threading
 import queue
 import sys
-import main
+
+sys.stdout.reconfigure(encoding="utf-8")
 
 # -------------------------
 # Get active window title
@@ -16,78 +17,117 @@ def get_active_window_title():
     return win32gui.GetWindowText(window)
 
 # -------------------------
-# Run main.py and capture output
+# Run main.py and capture output (live)
 # -------------------------
 def run_mainpy(output_queue):
+    """Run main.py as a subprocess and stream stdout lines to a queue."""
     process = subprocess.Popen(
-        [sys.executable, "main.py"],  # use venv python
+        [sys.executable, "-u", "main.py"],
         cwd=os.path.dirname(__file__),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
         bufsize=1
     )
 
-    for line in iter(process.stdout.readline, ''):
-        output_queue.put(line.strip())
-    process.stdout.close()
-    process.wait()
+    def reader_thread(proc, q):
+        for line in iter(proc.stdout.readline, b''):
+            text = line.decode("utf-8", errors="replace").rstrip()
+            if text:
+                q.put(text)
+        proc.stdout.close()
+        proc.wait()
+        q.put("[Program finished]")
+
+    threading.Thread(target=reader_thread, args=(process, output_queue), daemon=True).start()
 
 # -------------------------
-# Show popup with live output
+# Create popup window
 # -------------------------
-def show_popup(output_queue):
-    def popup():
-        root = tk.Tk()
-        root.title("Smart Assistant")
-        root.geometry("400x300")
+def create_popup(root, output_queue):
+    """Create or update popup to display streaming output."""
+    popup = tk.Toplevel(root)
+    popup.title("🧠 Smart Assistant")
+    popup.geometry("600x400")
+    popup.configure(bg="#1e1e1e")
 
-        label = tk.Label(root, text="⚠️ Google detected! Running main.py...", font=("Arial", 12))
-        label.pack(pady=5)
+    title_label = tk.Label(
+        popup, 
+        text="⚙️ Smart Assistant Running (main.py)",
+        font=("Segoe UI", 12, "bold"), 
+        bg="#1e1e1e", 
+        fg="#00ff88"
+    )
+    title_label.pack(pady=6)
 
-        text_box = tk.Text(root, wrap="word", state="disabled")
-        text_box.pack(expand=True, fill="both", padx=10, pady=10)
+    # Text area with scrollbar
+    frame = tk.Frame(popup, bg="#1e1e1e")
+    frame.pack(expand=True, fill="both", padx=10, pady=5)
 
-        def update_output():
-            while not output_queue.empty():
-                line = output_queue.get_nowait()
-                text_box.config(state="normal")
-                text_box.insert("end", line + "\n")
-                text_box.see("end")
-                text_box.config(state="disabled")
-            root.after(200, update_output)
+    scrollbar = tk.Scrollbar(frame)
+    scrollbar.pack(side="right", fill="y")
 
-        update_output()
-        root.mainloop()
+    text_box = tk.Text(
+        frame, wrap="word", state="disabled", 
+        yscrollcommand=scrollbar.set, bg="#1e1e1e", fg="#ffffff", 
+        insertbackground="white", font=("Consolas", 10)
+    )
+    text_box.pack(expand=True, fill="both")
+    scrollbar.config(command=text_box.yview)
 
-    threading.Thread(target=popup, daemon=True).start()
+    # Periodic update loop
+    def update_output():
+        while not output_queue.empty():
+            line = output_queue.get_nowait()
+            text_box.config(state="normal")
+            text_box.insert("end", line + "\n")
+            text_box.see("end")
+            text_box.config(state="disabled")
+        popup.after(200, update_output)
+
+    update_output()
+    return popup
 
 # -------------------------
-# Main watcher loop
+# Watcher function
 # -------------------------
-def main():
-    print("🔎 Monitoring for Google in Chrome...")
-    already_launched = False  
-    output_queue = queue.Queue()
+def watcher(output_queue, root):
+    print("🔎 Monitoring for Google Chrome launch...")
+    main_launched = False
+    popup = None
 
     while True:
         title = get_active_window_title()
 
         if "Google" in title and "Chrome" in title:
-            if not already_launched:  
-                print("🚀 Google detected! Launching main.py and popup...")
+            if not main_launched:
+                print("🚀 Chrome detected → launching main.py and popup")
 
-                # Start main.py with live output
-                threading.Thread(target=run_mainpy, args=(output_queue,), daemon=True).start()
+                run_mainpy(output_queue)
+                main_launched = True
 
-                # Show popup
-                show_popup(output_queue)
+                # Must create popup in the Tkinter thread
+                root.after(0, lambda: create_popup(root, output_queue))
 
-                already_launched = True
-        else:
-            already_launched = False  
+        # If main.py prints something that contains "REMINDER", popup reappears
+        if not output_queue.empty():
+            try:
+                line = output_queue.queue[-1]
+                if "REMINDER" in line.upper():
+                    root.after(0, lambda: create_popup(root, output_queue))
+            except IndexError:
+                pass
 
         time.sleep(2)
 
+# -------------------------
+# Main
+# -------------------------
 if __name__ == "__main__":
-    main()
+    output_queue = queue.Queue()
+    root = tk.Tk()
+    root.withdraw()  # hide main window
+
+    threading.Thread(target=watcher, args=(output_queue, root), daemon=True).start()
+
+    print("✅ Smart Assistant watcher started.")
+    root.mainloop()
